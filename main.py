@@ -1,0 +1,214 @@
+# main.py
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import mysql.connector
+import csv
+import io
+
+app = FastAPI()
+
+# Configuración de CORS
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "http://10.30.7.143:5173"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Modelo de datos para el formulario - Ahora con nombres estandarizados
+class Centro(BaseModel):
+    area: str
+    especie: str
+    centro: str
+    peso: int | None = None
+    sistema: str
+    monitoreados: str
+    fecha_apertura: str | None = None
+    fecha_cierre: str | None = None
+    prox_apertura: str | None = None
+    ponton: str | None = None
+    ex_ponton: str | None = None
+    cantidad_radares: int | None = None
+    nro_gps_ponton: str | None = None
+    otros_datos: str | None = None
+
+# Función para la conexión a la base de datos
+def get_db_connection():
+    try:
+        return mysql.connector.connect(
+            host="127.0.0.1",
+            user="root",
+            password="root",
+            database="formulario_db"
+        )
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al conectar con la base de datos: {err}")
+
+# Endpoint para recibir y guardar los datos de una sola entrada
+@app.post("/centros/")
+async def create_centro(centro: Centro):
+    try:
+        db = get_db_connection()
+        cursor = db.cursor()
+        sql = """
+        INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        val = (
+            centro.area, centro.especie, centro.centro, centro.peso, centro.sistema, centro.monitoreados,
+            centro.fecha_apertura, centro.fecha_cierre, centro.prox_apertura, centro.ponton,
+            centro.ex_ponton, centro.cantidad_radares, centro.nro_gps_ponton, centro.otros_datos
+        )
+        cursor.execute(sql, val)
+        db.commit()
+        return {"message": "Datos insertados correctamente"}
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al insertar datos: {err}")
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
+
+# Endpoint para recibir y procesar un archivo CSV
+@app.post("/upload-centros/")
+async def upload_centros_csv(file: UploadFile = File(...)):
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="El archivo debe ser de tipo .csv")
+    
+    try:
+        db = get_db_connection()
+        cursor = db.cursor()
+
+        # Paso 1: Insertar un nuevo reporte y obtener su ID
+        cursor.execute("INSERT INTO `reportes` (`fecha_subida`) VALUES (NOW())")
+        db.commit()
+        id_reporte = cursor.lastrowid
+        
+        contents = await file.read()
+        csv_file = io.StringIO(contents.decode('utf-8-sig', errors='ignore'))
+        csv_reader = csv.DictReader(csv_file, delimiter=';') 
+        
+        insert_count = 0
+        skip_count = 0 
+        
+        sql = """
+        INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`, `id_reporte`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        for row in csv_reader:
+            try:
+                centro_nombre = row.get('Centro')
+                if not centro_nombre:
+                    print("Error: Se encontró una fila sin nombre de centro. Se omite.")
+                    continue
+
+                check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
+                cursor.execute(check_sql, (centro_nombre, id_reporte))
+                existing_centro = cursor.fetchone()
+
+                if existing_centro:
+                    print(f"Advertencia: El centro '{centro_nombre}' ya existe para el reporte {id_reporte}. Se omite la inserción.")
+                    skip_count += 1
+                    continue
+
+                val = (
+                    row.get('Area'), row.get('Especie'), row.get('Centro'), 
+                    int(row.get('Peso')) if row.get('Peso') else None, 
+                    row.get('Sistema'), row.get('Monitoreados'),
+                    row.get('Fecha Apertura') if row.get('Fecha Apertura') else None,
+                    row.get('Fecha Cierre') if row.get('Fecha Cierre') else None, 
+                    row.get('Prox. Apertura') if row.get('Prox. Apertura') else None, 
+                    row.get('Pontón'),
+                    row.get('Ex Pontón'),
+                    int(row.get('Cantidad Radares')) if row.get('Cantidad Radares') else None,
+                    row.get('Nro. GPS Pontón'),
+                    row.get('Otros Datos'),
+                    id_reporte
+                )
+                cursor.execute(sql, val)
+                insert_count += 1
+            except Exception as e:
+                print(f"Error al procesar la fila: {row}. Error: {e}")
+                continue
+                
+        db.commit()
+        return {"message": f"Reporte {id_reporte} creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas."}
+        
+    except mysql.connector.Error as err:
+        if 'db' in locals() and db.is_connected():
+            db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al insertar datos en la base de datos: {err}")
+    except Exception as e:
+        if 'db' in locals() and db.is_connected():
+            db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error inesperado al procesar el archivo: {e}")
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
+
+# Endpoint para obtener todos los centros
+@app.get("/centros/")
+async def get_centros():
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM centros")
+        results = cursor.fetchall()
+        return results
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al obtener datos: {err}")
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
+
+# Endpoint para obtener todos los IDs de reportes
+@app.get("/reportes/")
+async def get_reportes():
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("SELECT id_reporte, fecha_subida FROM reportes")
+        results = cursor.fetchall()
+        return results
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al obtener datos de reportes: {err}")
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
+
+# NUEVO ENDPOINT: Obtener todos los centros de un reporte específico
+@app.get("/reportes/{id_reporte}")
+async def get_reporte_by_id(id_reporte: int):
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+        
+        # Primero, verifica si el ID de reporte existe
+        cursor.execute("SELECT id_reporte FROM reportes WHERE id_reporte = %s", (id_reporte,))
+        reporte = cursor.fetchone()
+        if not reporte:
+            raise HTTPException(status_code=404, detail=f"No se encontró un reporte con el ID {id_reporte}")
+            
+        # Si el reporte existe, obtén todos los centros asociados
+        cursor.execute("SELECT * FROM centros WHERE id_reporte = %s", (id_reporte,))
+        centros = cursor.fetchall()
+        
+        return centros
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al obtener los centros del reporte: {err}")
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
