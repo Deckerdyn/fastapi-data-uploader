@@ -7,6 +7,8 @@ import csv
 import io
 import os
 from dotenv import load_dotenv
+import pandas as pd # Importar pandas
+import openpyxl # openpyxl es necesario para que pandas lea .xlsx
 
 # Carga las variables de entorno del archivo .env
 load_dotenv()
@@ -28,7 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Modelo de datos para el formulario - Ahora con nombres estandarizados
+# Modelo de datos para el formulario
 class Centro(BaseModel):
     area: str
     especie: str
@@ -82,26 +84,46 @@ async def create_centro(centro: Centro):
             cursor.close()
             db.close()
 
-# Endpoint para recibir y procesar un archivo CSV
+# Endpoint para recibir y procesar archivos CSV o XLSX
 @app.post("/upload-centros/")
 async def upload_centros_csv(file: UploadFile = File(...)):
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="El archivo debe ser de tipo .csv")
-    
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No se ha proporcionado un archivo.")
+
+    file_extension = os.path.splitext(file.filename)[1].lower()
+
+    if file_extension not in ['.csv', '.xlsx']:
+        raise HTTPException(status_code=400, detail="El archivo debe ser de tipo .csv o .xlsx")
+
+    db = None
+    cursor = None
     try:
         db = get_db_connection()
         cursor = db.cursor()
-
         nombre_reporte = os.path.splitext(file.filename)[0]
 
+        # Paso 1: Leer el archivo y convertir a CSV si es Excel
+        if file_extension == '.xlsx':
+            try:
+                # Usar pandas para leer el archivo de Excel
+                df = pd.read_excel(file.file, sheet_name="Todos los centros", engine='openpyxl', skiprows=12) # Se lee la hoja "Todos los centros" y se saltan 12 filas
+                csv_buffer = io.StringIO()
+                # Se guarda en un buffer en formato CSV con el delimitador y la codificación correctos
+                df.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8')
+                csv_buffer.seek(0)
+                csv_reader = csv.DictReader(csv_buffer, delimiter=';')
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error al leer el archivo de Excel: {e}")
+        else: # Si es CSV
+            contents = await file.read()
+            csv_file = io.StringIO(contents.decode('utf-8-sig', errors='ignore'))
+            csv_reader = csv.DictReader(csv_file, delimiter=';') 
+
+        # Paso 2: Insertar reporte en la base de datos
         sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
         cursor.execute(sql_insert_reporte, (nombre_reporte,))
         db.commit()
         id_reporte = cursor.lastrowid
-        
-        contents = await file.read()
-        csv_file = io.StringIO(contents.decode('utf-8-sig', errors='ignore'))
-        csv_reader = csv.DictReader(csv_file, delimiter=';') 
         
         insert_count = 0
         skip_count = 0 
@@ -151,15 +173,15 @@ async def upload_centros_csv(file: UploadFile = File(...)):
         return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas."}
         
     except mysql.connector.Error as err:
-        if 'db' in locals() and db.is_connected():
+        if db and db.is_connected():
             db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al insertar datos en la base de datos: {err}")
     except Exception as e:
-        if 'db' in locals() and db.is_connected():
+        if db and db.is_connected():
             db.rollback()
         raise HTTPException(status_code=500, detail=f"Error inesperado al procesar el archivo: {e}")
     finally:
-        if 'db' in locals() and db.is_connected():
+        if db and db.is_connected():
             cursor.close()
             db.close()
 
