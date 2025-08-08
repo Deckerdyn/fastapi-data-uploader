@@ -105,10 +105,36 @@ async def upload_centros_csv(file: UploadFile = File(...)):
         # Paso 1: Leer el archivo y convertir a CSV si es Excel
         if file_extension == '.xlsx':
             try:
-                # Usar pandas para leer el archivo de Excel. Ya no se usa skiprows.
-                df = pd.read_excel(file.file, sheet_name="Todos los centros", engine='openpyxl')
+                # Leer el archivo de Excel y encontrar el encabezado dinámicamente
+                file_bytes = await file.read()
+                file_stream = io.BytesIO(file_bytes)
+                
+                df_temp = pd.read_excel(file_stream, sheet_name="Todos los centros", header=None)
+                
+                header_row_index = -1
+                for i, row in df_temp.iterrows():
+                    if 'Centro' in row.values:
+                        header_row_index = i
+                        break
+                
+                if header_row_index == -1:
+                    raise HTTPException(status_code=400, detail="No se pudo encontrar la fila de encabezado 'Centro' en el archivo.")
+                
+                # Volver a leer el archivo, esta vez usando la fila de encabezado correcta
+                file_stream.seek(0)
+                df = pd.read_excel(file_stream, sheet_name="Todos los centros", header=header_row_index)
+
+                # Limpiar los nombres de las columnas: eliminar espacios, puntos, etc., y convertirlos a minúsculas
+                df.columns = df.columns.astype(str).str.strip().str.replace('.', '', regex=False).str.replace(' ', '_', regex=False).str.lower()
+                
+                # Eliminar columnas con nombres nulos o vacíos
+                df = df.loc[:, df.columns.notna()]
+                df = df.loc[:, df.columns != '']
+                
+                # Eliminar filas donde todos los valores son nulos
+                df.dropna(how='all', inplace=True)
+
                 csv_buffer = io.StringIO()
-                # Se guarda en un buffer en formato CSV con el delimitador y la codificación correctos
                 df.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8')
                 csv_buffer.seek(0)
                 csv_reader = csv.DictReader(csv_buffer, delimiter=';')
@@ -135,8 +161,9 @@ async def upload_centros_csv(file: UploadFile = File(...)):
         
         for row in csv_reader:
             try:
-                centro_nombre = row.get('Centro')
-                if not centro_nombre:
+                # Usamos .get() para evitar errores si la columna no existe
+                centro_nombre = row.get('centro') # Columna limpia
+                if not centro_nombre or not str(centro_nombre).strip():
                     print("Error: Se encontró una fila sin nombre de centro. Se omite.")
                     continue
 
@@ -148,19 +175,26 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                     print(f"Advertencia: El centro '{centro_nombre}' ya existe para el reporte {id_reporte}. Se omite la inserción.")
                     skip_count += 1
                     continue
-
+                
+                # Convertir los valores a los tipos correctos antes de la inserción
+                peso_val = row.get('peso')
+                peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
+                
+                cantidad_radares_val = row.get('cantidad_radares')
+                cantidad_radares_val = int(cantidad_radares_val) if cantidad_radares_val and str(cantidad_radares_val).strip().isdigit() else None
+                
                 val = (
-                    row.get('Area'), row.get('Especie'), row.get('Centro'), 
-                    int(row.get('Peso')) if row.get('Peso') else None, 
-                    row.get('Sistema'), row.get('Monitoreados'),
-                    row.get('Fecha Apertura') if row.get('Fecha Apertura') else None,
-                    row.get('Fecha Cierre') if row.get('Fecha Cierre') else None, 
-                    row.get('Prox. Apertura') if row.get('Prox. Apertura') else None, 
-                    row.get('Pontón'),
-                    row.get('Ex Pontón'),
-                    int(row.get('Cantidad Radares')) if row.get('Cantidad Radares') else None,
-                    row.get('Nro. GPS Pontón'),
-                    row.get('Otros Datos'),
+                    row.get('area'), row.get('especie'), row.get('centro'), 
+                    peso_val,
+                    row.get('sistema'), row.get('monitoreados'),
+                    row.get('fecha_apertura') if row.get('fecha_apertura') and row.get('fecha_apertura').strip() else None,
+                    row.get('fecha_cierre') if row.get('fecha_cierre') and row.get('fecha_cierre').strip() else None, 
+                    row.get('prox_apertura') if row.get('prox_apertura') and row.get('prox_apertura').strip() else None, 
+                    row.get('pontón'), 
+                    row.get('ex_pontón'), 
+                    cantidad_radares_val,
+                    row.get('nro_gps_pontón'), 
+                    row.get('otros_datos'), 
                     id_reporte
                 )
                 cursor.execute(sql, val)
