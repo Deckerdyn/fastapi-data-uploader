@@ -7,8 +7,8 @@ import csv
 import io
 import os
 from dotenv import load_dotenv
-import pandas as pd # Importar pandas
-import openpyxl # openpyxl es necesario para que pandas lea .xlsx
+import pandas as pd
+import openpyxl
 
 # Carga las variables de entorno del archivo .env
 load_dotenv()
@@ -105,8 +105,8 @@ async def upload_centros_csv(file: UploadFile = File(...)):
         # Paso 1: Leer el archivo y convertir a CSV si es Excel
         if file_extension == '.xlsx':
             try:
-                # Usar pandas para leer el archivo de Excel
-                df = pd.read_excel(file.file, sheet_name="Todos los centros", engine='openpyxl', skiprows=12) # Se lee la hoja "Todos los centros" y se saltan 12 filas
+                # Usar pandas para leer el archivo de Excel. Ya no se usa skiprows.
+                df = pd.read_excel(file.file, sheet_name="Todos los centros", engine='openpyxl')
                 csv_buffer = io.StringIO()
                 # Se guarda en un buffer en formato CSV con el delimitador y la codificación correctos
                 df.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8')
