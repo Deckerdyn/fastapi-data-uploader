@@ -5,6 +5,11 @@ from pydantic import BaseModel, Field
 import mysql.connector
 import csv
 import io
+import os
+from dotenv import load_dotenv
+
+# Carga las variables de entorno del archivo .env
+load_dotenv()
 
 app = FastAPI()
 
@@ -12,7 +17,7 @@ app = FastAPI()
 origins = [
     "http://localhost",
     "http://localhost:3000",
-    "http://10.30.7.143:5173"
+    "http://10.20.7.103:5173"
 ]
 
 app.add_middleware(
@@ -44,10 +49,10 @@ class Centro(BaseModel):
 def get_db_connection():
     try:
         return mysql.connector.connect(
-            host="127.0.0.1",
-            user="root",
-            password="root",
-            database="formulario_db"
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME")
         )
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Error al conectar con la base de datos: {err}")
@@ -87,8 +92,10 @@ async def upload_centros_csv(file: UploadFile = File(...)):
         db = get_db_connection()
         cursor = db.cursor()
 
-        # Paso 1: Insertar un nuevo reporte y obtener su ID
-        cursor.execute("INSERT INTO `reportes` (`fecha_subida`) VALUES (NOW())")
+        nombre_reporte = os.path.splitext(file.filename)[0]
+
+        sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
+        cursor.execute(sql_insert_reporte, (nombre_reporte,))
         db.commit()
         id_reporte = cursor.lastrowid
         
@@ -141,7 +148,7 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 continue
                 
         db.commit()
-        return {"message": f"Reporte {id_reporte} creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas."}
+        return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas."}
         
     except mysql.connector.Error as err:
         if 'db' in locals() and db.is_connected():
@@ -178,7 +185,7 @@ async def get_reportes():
     try:
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
-        cursor.execute("SELECT id_reporte, fecha_subida FROM reportes")
+        cursor.execute("SELECT id_reporte, nombre_reporte, fecha_subida FROM reportes")
         results = cursor.fetchall()
         return results
     except mysql.connector.Error as err:
@@ -188,20 +195,18 @@ async def get_reportes():
             cursor.close()
             db.close()
 
-# NUEVO ENDPOINT: Obtener todos los centros de un reporte específico
+# Endpoint para obtener todos los centros de un reporte específico
 @app.get("/reportes/{id_reporte}")
 async def get_reporte_by_id(id_reporte: int):
     try:
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
         
-        # Primero, verifica si el ID de reporte existe
         cursor.execute("SELECT id_reporte FROM reportes WHERE id_reporte = %s", (id_reporte,))
         reporte = cursor.fetchone()
         if not reporte:
             raise HTTPException(status_code=404, detail=f"No se encontró un reporte con el ID {id_reporte}")
             
-        # Si el reporte existe, obtén todos los centros asociados
         cursor.execute("SELECT * FROM centros WHERE id_reporte = %s", (id_reporte,))
         centros = cursor.fetchall()
         
