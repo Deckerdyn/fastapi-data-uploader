@@ -36,7 +36,7 @@ class Centro(BaseModel):
     especie: str
     centro: str
     peso: int | None = None
-    sistema: str # El tipo sigue siendo str, la transformación a mayúsculas se hace antes de la la inserción
+    sistema: str 
     monitoreados: str
     fecha_apertura: str | None = None
     fecha_cierre: str | None = None
@@ -168,6 +168,13 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 if not centro_nombre or not str(centro_nombre).strip():
                     print("Error: Se encontró una fila sin nombre de centro. Se omite.")
                     continue
+                
+                # --- NUEVA COMPROBACIÓN: Si el valor es el nombre de la columna, omite la fila
+                if centro_nombre.strip().lower() == 'centro':
+                    print(f"Advertencia: Se omitió la fila de encabezado: {row}")
+                    skip_count += 1
+                    continue
+                # --------------------------
 
                 check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
                 cursor.execute(check_sql, (centro_nombre, id_reporte))
