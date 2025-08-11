@@ -71,10 +71,38 @@ async def create_centro(centro: Centro):
         """
         # Convierte el valor de 'sistema' a mayúsculas aquí antes de la inserción
         sistema_upper = centro.sistema.upper()
+        
+        # Convierte el valor de 'especie' a None si es una cadena vacía o solo espacios
+        especie_val = centro.especie.strip() if centro.especie else None
+        especie_val = especie_val if especie_val != "" else None
+
+        # Convierte los valores de campos opcionales a None si son cadenas vacías o solo espacios
+        fecha_apertura_val = centro.fecha_apertura.strip() if centro.fecha_apertura else None
+        fecha_apertura_val = fecha_apertura_val if fecha_apertura_val != "" else None
+
+        fecha_cierre_val = centro.fecha_cierre.strip() if centro.fecha_cierre else None
+        fecha_cierre_val = fecha_cierre_val if fecha_cierre_val != "" else None
+
+        prox_apertura_val = centro.prox_apertura.strip() if centro.prox_apertura else None
+        prox_apertura_val = prox_apertura_val if prox_apertura_val != "" else None
+
+        ponton_val = centro.ponton.strip() if centro.ponton else None
+        ponton_val = ponton_val if ponton_val != "" else None
+
+        ex_ponton_val = centro.ex_ponton.strip() if centro.ex_ponton else None
+        ex_ponton_val = ex_ponton_val if ex_ponton_val != "" else None
+
+        nro_gps_ponton_val = centro.nro_gps_ponton.strip() if centro.nro_gps_ponton else None
+        nro_gps_ponton_val = nro_gps_ponton_val if nro_gps_ponton_val != "" else None
+
+        otros_datos_val = centro.otros_datos.strip() if centro.otros_datos else None
+        otros_datos_val = otros_datos_val if otros_datos_val != "" else None
+
+
         val = (
-            centro.area, centro.especie, centro.centro, centro.peso, sistema_upper, centro.monitoreados,
-            centro.fecha_apertura, centro.fecha_cierre, centro.prox_apertura, centro.ponton,
-            centro.ex_ponton, centro.cantidad_radares, centro.nro_gps_ponton, centro.otros_datos
+            centro.area, especie_val, centro.centro, centro.peso, sistema_upper, centro.monitoreados,
+            fecha_apertura_val, fecha_cierre_val, prox_apertura_val, ponton_val,
+            ex_ponton_val, centro.cantidad_radares, nro_gps_ponton_val, otros_datos_val
         )
         cursor.execute(sql, val)
         db.commit()
@@ -189,6 +217,41 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 sistema_from_file = row.get('sistema')
                 sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file else None
 
+                # Convierte el valor de 'especie' a None si es una cadena vacía o solo espacios
+                especie_from_file = row.get('especie')
+                especie_val_from_file = especie_from_file.strip() if especie_from_file else None
+                especie_val_from_file = especie_val_from_file if especie_val_from_file != "" else None
+
+                # Convierte los valores de campos opcionales a None si son cadenas vacías o solo espacios
+                fecha_apertura_from_file = row.get('fecha_apertura')
+                fecha_apertura_val_from_file = fecha_apertura_from_file.strip() if fecha_apertura_from_file else None
+                fecha_apertura_val_from_file = fecha_apertura_val_from_file if fecha_apertura_val_from_file != "" else None
+
+                fecha_cierre_from_file = row.get('fecha_cierre')
+                fecha_cierre_val_from_file = fecha_cierre_from_file.strip() if fecha_cierre_from_file else None
+                fecha_cierre_val_from_file = fecha_cierre_val_from_file if fecha_cierre_val_from_file != "" else None
+
+                prox_apertura_from_file = row.get('prox_apertura')
+                prox_apertura_val_from_file = prox_apertura_from_file.strip() if prox_apertura_from_file else None
+                prox_apertura_val_from_file = prox_apertura_val_from_file if prox_apertura_val_from_file != "" else None
+
+                ponton_from_file = row.get('ponton')
+                ponton_val_from_file = ponton_from_file.strip() if ponton_from_file else None
+                ponton_val_from_file = ponton_val_from_file if ponton_val_from_file != "" else None
+
+                ex_ponton_from_file = row.get('ex_ponton')
+                ex_ponton_val_from_file = ex_ponton_from_file.strip() if ex_ponton_from_file else None
+                ex_ponton_val_from_file = ex_ponton_val_from_file if ex_ponton_val_from_file != "" else None
+
+                nro_gps_ponton_from_file = row.get('nro_gps_ponton')
+                nro_gps_ponton_val_from_file = nro_gps_ponton_from_file.strip() if nro_gps_ponton_from_file else None
+                nro_gps_ponton_val_from_file = nro_gps_ponton_val_from_file if nro_gps_ponton_val_from_file != "" else None
+
+                otros_datos_from_file = row.get('otros_datos')
+                otros_datos_val_from_file = otros_datos_from_file.strip() if otros_datos_from_file else None
+                otros_datos_val_from_file = otros_datos_val_from_file if otros_datos_val_from_file != "" else None
+
+
                 # Convertir los valores a los tipos correctos antes de la inserción
                 peso_val = row.get('peso')
                 peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
@@ -197,18 +260,18 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 cantidad_radares_val = int(cantidad_radares_val) if cantidad_radares_val and str(cantidad_radares_val).strip().isdigit() else None
                 
                 val = (
-                    row.get('area'), row.get('especie'), row.get('centro'), 
+                    row.get('area'), especie_val_from_file, row.get('centro'), 
                     peso_val,
                     sistema_upper_from_file, # Usa el valor en mayúsculas
                     row.get('monitoreados'),
-                    row.get('fecha_apertura') if row.get('fecha_apertura') and row.get('fecha_apertura').strip() else None,
-                    row.get('fecha_cierre') if row.get('fecha_cierre') and row.get('fecha_cierre').strip() else None, 
-                    row.get('prox_apertura') if row.get('prox_apertura') and row.get('prox_apertura').strip() else None, 
-                    row.get('pontón'), 
-                    row.get('ex_pontón'), 
+                    fecha_apertura_val_from_file,
+                    fecha_cierre_val_from_file, 
+                    prox_apertura_val_from_file, 
+                    ponton_val_from_file, 
+                    ex_ponton_val_from_file, 
                     cantidad_radares_val,
-                    row.get('nro_gps_pontón'), 
-                    row.get('otros_datos'), 
+                    nro_gps_ponton_val_from_file, 
+                    otros_datos_val_from_file, 
                     id_reporte
                 )
                 cursor.execute(sql, val)
