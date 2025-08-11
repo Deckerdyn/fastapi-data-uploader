@@ -1,5 +1,5 @@
 # main.py
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import mysql.connector
@@ -9,11 +9,123 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 import openpyxl
+from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import jwt
+from typing import Annotated
+from datetime import datetime, timedelta
 
 # Carga las variables de entorno del archivo .env
 load_dotenv()
 
 app = FastAPI()
+
+# Configuración para el hasheo de contraseñas
+contexto_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Clave secreta para JWT
+#SECRET_KEY = os.getenv("SECRET_KEY", "123")
+ALGORITMO = "HS256"
+TIEMPO_EXPIRACION_TOKEN_MINUTOS = 30
+
+# Esquema de autenticación OAuth2
+esquema_oauth2 = OAuth2PasswordBearer(tokenUrl="/token")
+
+# --- Modelos de datos de autenticación ---
+class CredencialesUsuario(BaseModel):
+    nombre_usuario: str
+    contrasena: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+# --- Funciones de la base de datos y seguridad ---
+def obtener_conexion_db():
+    try:
+        return mysql.connector.connect(
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME")
+        )
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al conectar con la base de datos: {err}")
+
+def hashear_contrasena(contrasena: str):
+    return contexto_pwd.hash(contrasena)
+
+def verificar_contrasena(contrasena_plana: str, contrasena_hash: str):
+    return contexto_pwd.verify(contrasena_plana, contrasena_hash)
+
+def buscar_usuario_en_db(nombre_usuario: str):
+    try:
+        db = obtener_conexion_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM usuarios WHERE nombre_usuario = %s", (nombre_usuario,))
+        usuario = cursor.fetchone()
+        return usuario
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
+
+def crear_token_acceso(datos: dict, tiempo_expiracion: timedelta | None = None):
+    a_codificar = datos.copy()
+    if tiempo_expiracion:
+        expirar = datetime.utcnow() + tiempo_expiracion
+    else:
+        expirar = datetime.utcnow() + timedelta(minutes=TIEMPO_EXPIRACION_TOKEN_MINUTOS)
+    a_codificar.update({"exp": expirar})
+    token_codificado = jwt.encode(a_codificar, SECRET_KEY, algorithm=ALGORITMO)
+    return token_codificado
+
+async def obtener_usuario_actual(token: Annotated[str, Depends(esquema_oauth2)]):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITMO])
+        nombre_usuario: str = payload.get("sub")
+        if nombre_usuario is None:
+            raise HTTPException(status_code=401, detail="Credenciales inválidas")
+        usuario = buscar_usuario_en_db(nombre_usuario)
+        if usuario is None:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        return usuario
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+# --- Endpoints de autenticación ---
+@app.post("/register/")
+def register_user(usuario_data: CredencialesUsuario):
+    if buscar_usuario_en_db(usuario_data.nombre_usuario):
+        raise HTTPException(status_code=400, detail="El nombre de usuario ya existe")
+    
+    contrasena_hasheada = hashear_contrasena(usuario_data.contrasena)
+    try:
+        db = obtener_conexion_db()
+        cursor = db.cursor()
+        sql = "INSERT INTO usuarios (nombre_usuario, contrasena_hash) VALUES (%s, %s)"
+        val = (usuario_data.nombre_usuario, contrasena_hasheada)
+        cursor.execute(sql, val)
+        db.commit()
+        return {"message": "Usuario creado exitosamente"}
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al registrar usuario: {err}")
+    finally:
+        if 'db' in locals() and db.is_connected():
+            cursor.close()
+            db.close()
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(formulario_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    usuario = buscar_usuario_en_db(formulario_data.username)
+    if not usuario or not verificar_contrasena(formulario_data.password, usuario['contrasena_hash']):
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    
+    tiempo_expiracion = timedelta(minutes=TIEMPO_EXPIRACION_TOKEN_MINUTOS)
+    token_acceso = crear_token_acceso(
+        datos={"sub": usuario['nombre_usuario']}, tiempo_expiracion=tiempo_expiracion
+    )
+    return {"access_token": token_acceso, "token_type": "bearer"}
 
 # Configuración de CORS
 origins = [
