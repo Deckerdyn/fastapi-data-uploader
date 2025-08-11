@@ -36,7 +36,7 @@ class Centro(BaseModel):
     especie: str
     centro: str
     peso: int | None = None
-    sistema: str
+    sistema: str # El tipo sigue siendo str, la transformación a mayúsculas se hace antes de la la inserción
     monitoreados: str
     fecha_apertura: str | None = None
     fecha_cierre: str | None = None
@@ -69,8 +69,10 @@ async def create_centro(centro: Centro):
         INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
+        # Convierte el valor de 'sistema' a mayúsculas aquí antes de la inserción
+        sistema_upper = centro.sistema.upper()
         val = (
-            centro.area, centro.especie, centro.centro, centro.peso, centro.sistema, centro.monitoreados,
+            centro.area, centro.especie, centro.centro, centro.peso, sistema_upper, centro.monitoreados,
             centro.fecha_apertura, centro.fecha_cierre, centro.prox_apertura, centro.ponton,
             centro.ex_ponton, centro.cantidad_radares, centro.nro_gps_ponton, centro.otros_datos
         )
@@ -176,6 +178,10 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                     skip_count += 1
                     continue
                 
+                # Convierte el valor de 'sistema' a mayúsculas aquí antes de la inserción
+                sistema_from_file = row.get('sistema')
+                sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file else None
+
                 # Convertir los valores a los tipos correctos antes de la inserción
                 peso_val = row.get('peso')
                 peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
@@ -186,7 +192,8 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 val = (
                     row.get('area'), row.get('especie'), row.get('centro'), 
                     peso_val,
-                    row.get('sistema'), row.get('monitoreados'),
+                    sistema_upper_from_file, # Usa el valor en mayúsculas
+                    row.get('monitoreados'),
                     row.get('fecha_apertura') if row.get('fecha_apertura') and row.get('fecha_apertura').strip() else None,
                     row.get('fecha_cierre') if row.get('fecha_cierre') and row.get('fecha_cierre').strip() else None, 
                     row.get('prox_apertura') if row.get('prox_apertura') and row.get('prox_apertura').strip() else None, 
@@ -227,6 +234,10 @@ async def get_centros():
         cursor = db.cursor(dictionary=True)
         cursor.execute("SELECT * FROM centros")
         results = cursor.fetchall()
+        # Transforma el campo 'sistema' a mayúsculas al obtener los datos
+        for row in results:
+            if 'sistema' in row and row['sistema'] is not None:
+                row['sistema'] = row['sistema'].upper()
         return results
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Error al obtener datos: {err}")
@@ -265,7 +276,10 @@ async def get_reporte_by_id(id_reporte: int):
             
         cursor.execute("SELECT * FROM centros WHERE id_reporte = %s", (id_reporte,))
         centros = cursor.fetchall()
-        
+        # Transforma el campo 'sistema' a mayúsculas al obtener los datos
+        for row in centros:
+            if 'sistema' in row and row['sistema'] is not None:
+                row['sistema'] = row['sistema'].upper()
         return centros
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Error al obtener los centros del reporte: {err}")
