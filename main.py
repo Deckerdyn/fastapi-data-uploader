@@ -33,7 +33,7 @@ app.add_middleware(
 # Modelo de datos para el formulario
 class Centro(BaseModel):
     area: str
-    especie: str
+    especie: str | None = None  # Se permite que sea None
     centro: str
     peso: int | None = None
     sistema: str 
@@ -131,11 +131,12 @@ async def upload_centros_csv(file: UploadFile = File(...)):
         db = get_db_connection()
         cursor = db.cursor()
         nombre_reporte = os.path.splitext(file.filename)[0]
+        
+        processed_rows = [] # Lista para almacenar filas válidas antes de insertar
 
         # Paso 1: Leer el archivo y convertir a CSV si es Excel
         if file_extension == '.xlsx':
             try:
-                # Leer el archivo de Excel y encontrar el encabezado dinámicamente
                 file_bytes = await file.read()
                 file_stream = io.BytesIO(file_bytes)
                 
@@ -150,18 +151,14 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 if header_row_index == -1:
                     raise HTTPException(status_code=400, detail="No se pudo encontrar la fila de encabezado 'Centro' en el archivo.")
                 
-                # Volver a leer el archivo, esta vez usando la fila de encabezado correcta
                 file_stream.seek(0)
                 df = pd.read_excel(file_stream, sheet_name="Todos los centros", header=header_row_index)
 
-                # Limpiar los nombres de las columnas: eliminar espacios, puntos, etc., y convertirlos a minúsculas
                 df.columns = df.columns.astype(str).str.strip().str.replace('.', '', regex=False).str.replace(' ', '_', regex=False).str.lower()
                 
-                # Eliminar columnas con nombres nulos o vacíos
                 df = df.loc[:, df.columns.notna()]
                 df = df.loc[:, df.columns != '']
                 
-                # Eliminar filas donde todos los valores son nulos
                 df.dropna(how='all', inplace=True)
 
                 csv_buffer = io.StringIO()
@@ -175,54 +172,30 @@ async def upload_centros_csv(file: UploadFile = File(...)):
             csv_file = io.StringIO(contents.decode('utf-8-sig', errors='ignore'))
             csv_reader = csv.DictReader(csv_file, delimiter=';') 
 
-        # Paso 2: Insertar reporte en la base de datos
-        sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
-        cursor.execute(sql_insert_reporte, (nombre_reporte,))
-        db.commit()
-        id_reporte = cursor.lastrowid
-        
-        insert_count = 0
+        # --- PRE-PROCESAMIENTO: Recolectar filas válidas ---
         skip_count = 0 
-        
-        sql = """
-        INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`, `id_reporte`)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
         
         for row in csv_reader:
             try:
-                # Usamos .get() para evitar errores si la columna no existe
-                centro_nombre = row.get('centro') # Columna limpia
+                centro_nombre = row.get('centro')
                 if not centro_nombre or not str(centro_nombre).strip():
                     print("Error: Se encontró una fila sin nombre de centro. Se omite.")
+                    skip_count += 1
                     continue
                 
-                # --- NUEVA COMPROBACIÓN: Si el valor es el nombre de la columna, omite la fila
                 if centro_nombre.strip().lower() == 'centro':
                     print(f"Advertencia: Se omitió la fila de encabezado: {row}")
                     skip_count += 1
                     continue
-                # --------------------------
-
-                check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
-                cursor.execute(check_sql, (centro_nombre, id_reporte))
-                existing_centro = cursor.fetchone()
-
-                if existing_centro:
-                    print(f"Advertencia: El centro '{centro_nombre}' ya existe para el reporte {id_reporte}. Se omite la inserción.")
-                    skip_count += 1
-                    continue
                 
-                # Convierte el valor de 'sistema' a mayúsculas aquí antes de la inserción
+                # Pre-validaciones y transformación de tipos para cada fila
                 sistema_from_file = row.get('sistema')
                 sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file else None
 
-                # Convierte el valor de 'especie' a None si es una cadena vacía o solo espacios
                 especie_from_file = row.get('especie')
                 especie_val_from_file = especie_from_file.strip() if especie_from_file else None
                 especie_val_from_file = especie_val_from_file if especie_val_from_file != "" else None
 
-                # Convierte los valores de campos opcionales a None si son cadenas vacías o solo espacios
                 fecha_apertura_from_file = row.get('fecha_apertura')
                 fecha_apertura_val_from_file = fecha_apertura_from_file.strip() if fecha_apertura_from_file else None
                 fecha_apertura_val_from_file = fecha_apertura_val_from_file if fecha_apertura_val_from_file != "" else None
@@ -251,37 +224,85 @@ async def upload_centros_csv(file: UploadFile = File(...)):
                 otros_datos_val_from_file = otros_datos_from_file.strip() if otros_datos_from_file else None
                 otros_datos_val_from_file = otros_datos_val_from_file if otros_datos_val_from_file != "" else None
 
-
-                # Convertir los valores a los tipos correctos antes de la inserción
                 peso_val = row.get('peso')
                 peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
                 
                 cantidad_radares_val = row.get('cantidad_radares')
                 cantidad_radares_val = int(cantidad_radares_val) if cantidad_radares_val and str(cantidad_radares_val).strip().isdigit() else None
                 
+                processed_rows.append({
+                    'area': row.get('area'),
+                    'especie': especie_val_from_file,
+                    'centro': centro_nombre, 
+                    'peso': peso_val,
+                    'sistema': sistema_upper_from_file,
+                    'monitoreados': row.get('monitoreados'),
+                    'fecha_apertura': fecha_apertura_val_from_file,
+                    'fecha_cierre': fecha_cierre_val_from_file, 
+                    'prox_apertura': prox_apertura_val_from_file, 
+                    'ponton': ponton_val_from_file, 
+                    'ex_ponton': ex_ponton_val_from_file, 
+                    'cantidad_radares': cantidad_radares_val,
+                    'nro_gps_ponton': nro_gps_ponton_val_from_file, 
+                    'otros_datos': otros_datos_val_from_file
+                })
+            except Exception as e:
+                print(f"Error al pre-procesar la fila: {row}. Error: {e}")
+                skip_count += 1
+                continue
+        
+        # --- Lógica de inserción condicional ---
+        if not processed_rows:
+            raise HTTPException(status_code=400, detail=f"El archivo '{nombre_reporte}' no contiene registros válidos para insertar. Se han omitido {skip_count} filas.")
+
+        # Si hay filas válidas, inserta el reporte
+        sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
+        cursor.execute(sql_insert_reporte, (nombre_reporte,))
+        db.commit()
+        id_reporte = cursor.lastrowid
+        
+        insert_count = 0
+        sql = """
+        INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`, `id_reporte`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        for row_data in processed_rows:
+            try:
+                # Verificar duplicados para este reporte recién creado
+                check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
+                cursor.execute(check_sql, (row_data['centro'], id_reporte))
+                existing_centro = cursor.fetchone()
+
+                if existing_centro:
+                    print(f"Advertencia: El centro '{row_data['centro']}' ya existe para el reporte {id_reporte}. Se omite la inserción.")
+                    skip_count += 1 # Contamos los duplicados que se omiten en esta fase
+                    continue
+
                 val = (
-                    row.get('area'), especie_val_from_file, row.get('centro'), 
-                    peso_val,
-                    sistema_upper_from_file, # Usa el valor en mayúsculas
-                    row.get('monitoreados'),
-                    fecha_apertura_val_from_file,
-                    fecha_cierre_val_from_file, 
-                    prox_apertura_val_from_file, 
-                    ponton_val_from_file, 
-                    ex_ponton_val_from_file, 
-                    cantidad_radares_val,
-                    nro_gps_ponton_val_from_file, 
-                    otros_datos_val_from_file, 
+                    row_data['area'], row_data['especie'], row_data['centro'], 
+                    row_data['peso'],
+                    row_data['sistema'],
+                    row_data['monitoreados'],
+                    row_data['fecha_apertura'],
+                    row_data['fecha_cierre'], 
+                    row_data['prox_apertura'], 
+                    row_data['ponton'], 
+                    row_data['ex_ponton'], 
+                    row_data['cantidad_radares'],
+                    row_data['nro_gps_ponton'], 
+                    row_data['otros_datos'], 
                     id_reporte
                 )
                 cursor.execute(sql, val)
                 insert_count += 1
             except Exception as e:
-                print(f"Error al procesar la fila: {row}. Error: {e}")
+                print(f"Error al insertar fila procesada: {row_data}. Error: {e}")
+                skip_count += 1 # Contar también errores de inserción
                 continue
                 
         db.commit()
-        return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas."}
+        return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} centros. Se han omitido {skip_count} filas (errores o duplicados)."}
         
     except mysql.connector.Error as err:
         if db and db.is_connected():
