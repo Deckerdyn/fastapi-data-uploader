@@ -8,7 +8,7 @@ import openpyxl
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBasic, HTTPBasicCredentials # Se importa HTTPBasic y HTTPBasicCredentials para autenticación básica
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,6 @@ app.add_middleware(
 
 # --- Configuración de Autenticación Básica y Hashing de Contraseñas ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-# Instancia de HTTPBasic para manejar la autenticación básica
 basic_auth_scheme = HTTPBasic()
 
 # Modelos para la autenticación
@@ -57,9 +56,6 @@ def verify_password(plain_password, hashed_password):
 def get_password_hash(password):
     """Genera el hash de una contraseña."""
     return pwd_context.hash(password)
-
-# Se eliminan las funciones relacionadas con la creación y gestión de JWT
-# def create_access_token(...) ya no es necesaria
 
 # --- Funciones para la Base de Datos de Usuarios ---
 
@@ -169,14 +165,15 @@ async def register_user(user_data: UserCreate):
         if db and db.is_connected():
             db.close()
 
-# Se eliminó el endpoint /token ya que no se utilizan JWTs
-
-@app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_user)):
+@app.post("/login", response_model=User)
+async def login(current_user: User = Depends(get_current_user)):
     """
-    Endpoint para obtener la información del usuario actualmente autenticado.
-    Requiere autenticación básica válida (username/password en encabezado Authorization).
+    Endpoint para que el usuario inicie sesión con autenticación básica.
+    Si las credenciales son válidas, devuelve la información del usuario autenticado.
+    Este endpoint sirve para verificar las credenciales y confirmar el acceso.
     """
+    # Si la dependencia get_current_user no lanza una excepción, las credenciales son válidas.
+    # Simplemente devolvemos la información del usuario.
     return current_user
 
 # --- Endpoints Existentes con Autenticación Básica Requerida ---
