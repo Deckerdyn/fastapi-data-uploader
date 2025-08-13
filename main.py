@@ -83,7 +83,7 @@ def authenticate_user(db_conn, nombre_usuario: str, password: str):
     return user
 
 # --- Dependencia para Obtener el Usuario Actual (Protección de Rutas) ---
-
+# Esta dependencia solo se usará en los endpoints que queremos proteger.
 async def get_current_user(credentials: HTTPBasicCredentials = Depends(basic_auth_scheme)):
     """
     Dependencia que valida las credenciales de autenticación básica y obtiene el usuario autenticado.
@@ -134,7 +134,7 @@ def get_db_connection():
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Error al conectar con la base de datos: {err}")
 
-# --- Endpoints de Autenticación Básica ---
+# --- Endpoints de Autenticación Básica (Protegidos) ---
 
 @app.post("/register", response_model=User)
 async def register_user(user_data: UserCreate):
@@ -176,13 +176,13 @@ async def login(current_user: User = Depends(get_current_user)):
     # Simplemente devolvemos la información del usuario.
     return current_user
 
-# --- Endpoints Existentes con Autenticación Básica Requerida ---
+# --- Endpoints de Gestión de Datos (AHORA PÚBLICOS - NO REQUIEREN AUTENTICACIÓN) ---
 
 @app.post("/centros/")
-async def create_centro(centro: Centro, current_user: User = Depends(get_current_user)):
+async def create_centro(centro: Centro): # Eliminado: , current_user: User = Depends(get_current_user)
     """
     Endpoint para recibir y guardar los datos de una sola entrada.
-    Ahora requiere autenticación básica.
+    YA NO REQUIERE AUTENTICACIÓN.
     """
     try:
         db = get_db_connection()
@@ -208,10 +208,10 @@ async def create_centro(centro: Centro, current_user: User = Depends(get_current
             db.close()
 
 @app.post("/upload-centros/")
-async def upload_centros_csv(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , current_user: User = Depends(get_current_user)
     """
     Endpoint para recibir y procesar archivos CSV o XLSX.
-    Ahora requiere autenticación básica.
+    YA NO REQUIERE AUTENTICACIÓN.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No se ha proporcionado un archivo.")
@@ -346,10 +346,10 @@ async def upload_centros_csv(file: UploadFile = File(...), current_user: User = 
             db.close()
 
 @app.get("/centros/")
-async def get_centros(current_user: User = Depends(get_current_user)):
+async def get_centros(): # Eliminado: current_user: User = Depends(get_current_user)
     """
     Endpoint para obtener todos los centros.
-    Ahora requiere autenticación básica.
+    YA NO REQUIERE AUTENTICACIÓN.
     """
     try:
         db = get_db_connection()
@@ -368,10 +368,10 @@ async def get_centros(current_user: User = Depends(get_current_user)):
             db.close()
 
 @app.get("/reportes/")
-async def get_reportes(current_user: User = Depends(get_current_user)):
+async def get_reportes(): # Eliminado: current_user: User = Depends(get_current_user)
     """
     Endpoint para obtener todos los IDs de reportes.
-    Ahora requiere autenticación básica.
+    YA NO REQUIERE AUTENTICACIÓN.
     """
     try:
         db = get_db_connection()
@@ -387,10 +387,10 @@ async def get_reportes(current_user: User = Depends(get_current_user)):
             db.close()
 
 @app.get("/reportes/{id_reporte}")
-async def get_reporte_by_id(id_reporte: int, current_user: User = Depends(get_current_user)):
+async def get_reporte_by_id(id_reporte: int): # Eliminado: , current_user: User = Depends(get_current_user)
     """
     Endpoint para obtener todos los centros de un reporte específico.
-    Ahora requiere autenticación básica.
+    YA NO REQUIERE AUTENTICACIÓN.
     """
     try:
         db = get_db_connection()
