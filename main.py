@@ -1,6 +1,7 @@
 import os
 import io
 import csv
+from datetime import datetime, timedelta, timezone
 
 import mysql.connector
 import pandas as pd
@@ -8,7 +9,8 @@ import openpyxl
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
@@ -32,11 +34,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Configuración de Autenticación Básica y Hashing de Contraseñas ---
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-basic_auth_scheme = HTTPBasic()
+# --- Configuración de Autenticación con JWT ---
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("La variable de entorno SECRET_KEY no está configurada.")
+ALGORITHM = "HS256" # Algoritmo de encriptación
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 # El token expira después de 30 minutos
 
-# Modelos para la autenticación
+# El esquema `OAuth2PasswordBearer` se usa para la documentación de OpenAPI
+# y para extraer el token del encabezado 'Authorization' (Bearer Token).
+# No implementa OAuth2 completo, solo se usa para la funcionalidad del token.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# Hashing de contraseñas
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# --- Modelos para la autenticación ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: str | None = None
+
 class User(BaseModel):
     nombre_usuario: str
 
@@ -47,7 +67,7 @@ class UserCreate(BaseModel):
     nombre_usuario: str
     password: str
 
-# --- Funciones de Utilidad para Autenticación ---
+# --- Funciones de Utilidad para Autenticación y JWT ---
 
 def verify_password(plain_password, hashed_password):
     """Verifica si una contraseña plana coincide con su hash."""
@@ -56,6 +76,17 @@ def verify_password(plain_password, hashed_password):
 def get_password_hash(password):
     """Genera el hash de una contraseña."""
     return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    """Crea un nuevo JWT."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 # --- Funciones para la Base de Datos de Usuarios ---
 
@@ -83,22 +114,31 @@ def authenticate_user(db_conn, nombre_usuario: str, password: str):
     return user
 
 # --- Dependencia para Obtener el Usuario Actual (Protección de Rutas) ---
-# Esta dependencia solo se usará en los endpoints que queremos proteger.
-async def get_current_user(credentials: HTTPBasicCredentials = Depends(basic_auth_scheme)):
+async def get_current_user_token(token: str = Depends(oauth2_scheme)):
     """
-    Dependencia que valida las credenciales de autenticación básica y obtiene el usuario autenticado.
-    Si las credenciales no son válidas o el usuario no existe, lanza una excepción HTTPException.
+    Dependencia que valida un token JWT y obtiene el usuario.
+    Lanza HTTPException si el token no es válido o ha expirado.
     """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="No se pudieron validar las credenciales",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     db = None
     try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+    
+    try:
         db = get_db_connection()
-        user = authenticate_user(db, credentials.username, credentials.password)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Credenciales de autenticación inválidas",
-                headers={"WWW-Authenticate": "Basic"}, # Indica al cliente que use autenticación básica
-            )
+        user = get_user_from_db(db, username=token_data.username)
+        if user is None:
+            raise credentials_exception
         return user
     finally:
         if db and db.is_connected():
@@ -111,19 +151,14 @@ class Centro(BaseModel):
     centro: str
     peso: int | None = None
     sistema: str | None = None
-    # Modificación: monitoreados ahora es opcional y puede ser None
     monitoreados: str | None = None 
     fecha_apertura: str | None = None
     fecha_cierre: str | None = None
     prox_apertura: str | None = None
-    # Modificación: ponton ahora es opcional y puede ser None
     ponton: str | None = None
-    # Modificación: ex_ponton ahora es opcional y puede ser None
     ex_ponton: str | None = None
     cantidad_radares: int | None = None
-    # Modificación: nro_gps_ponton ahora es opcional y puede ser None
     nro_gps_ponton: str | None = None
-    # Modificación: otros_datos ahora es opcional y puede ser None
     otros_datos: str | None = None
 
 # Función para la conexión a la base de datos (existente)
@@ -139,13 +174,11 @@ def get_db_connection():
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"Error al conectar con la base de datos: {err}")
 
-# --- Endpoints de Autenticación Básica (Protegidos) ---
-
+# --- Endpoints de Autenticación y Token ---
 @app.post("/register", response_model=User)
 async def register_user(user_data: UserCreate):
     """
     Endpoint para registrar un nuevo usuario.
-    Verifica si el nombre de usuario ya existe y hashea la contraseña antes de guardarla.
     """
     db = None
     cursor = None
@@ -170,24 +203,38 @@ async def register_user(user_data: UserCreate):
         if db and db.is_connected():
             db.close()
 
-@app.post("/login", response_model=User)
-async def login(current_user: User = Depends(get_current_user)):
+@app.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """
-    Endpoint para que el usuario inicie sesión con autenticación básica.
-    Si las credenciales son válidas, devuelve la información del usuario autenticado.
-    Este endpoint sirve para verificar las credenciales y confirmar el acceso.
+    Endpoint para que el usuario inicie sesión.
+    Si las credenciales son válidas, devuelve un token de acceso.
     """
-    # Si la dependencia get_current_user no lanza una excepción, las credenciales son válidas.
-    # Simplemente devolvemos la información del usuario.
-    return current_user
+    db = None
+    try:
+        db = get_db_connection()
+        user = authenticate_user(db, form_data.username, form_data.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Nombre de usuario o contraseña incorrectos",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.nombre_usuario}, expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
+    finally:
+        if db and db.is_connected():
+            db.close()
 
-# --- Endpoints de Gestión de Datos (AHORA PÚBLICOS - NO REQUIEREN AUTENTICACIÓN) ---
+# --- Endpoints de Gestión de Datos (AHORA PROTEGIDOS) ---
 
 @app.post("/centros/")
-async def create_centro(centro: Centro): # Eliminado: , current_user: User = Depends(get_current_user)
+async def create_centro(centro: Centro, current_user: User = Depends(get_current_user_token)):
     """
     Endpoint para recibir y guardar los datos de una sola entrada.
-    YA NO REQUIERE AUTENTICACIÓN.
+    AHORA REQUIERE AUTENTICACIÓN con token.
     """
     try:
         db = get_db_connection()
@@ -232,10 +279,10 @@ async def create_centro(centro: Centro): # Eliminado: , current_user: User = Dep
             db.close()
 
 @app.post("/upload-centros/")
-async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , current_user: User = Depends(get_current_user)
+async def upload_centros_csv(file: UploadFile = File(...), current_user: User = Depends(get_current_user_token)):
     """
     Endpoint para recibir y procesar archivos CSV o XLSX.
-    YA NO REQUIERE AUTENTICACIÓN.
+    AHORA REQUIERE AUTENTICACIÓN con token.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No se ha proporcionado un archivo.")
@@ -248,7 +295,7 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
     db = None
     cursor = None
     nombre_reporte = os.path.splitext(file.filename)[0]
-    id_reporte = None # Inicializar id_reporte a None
+    id_reporte = None
 
     try:
         db = get_db_connection()
@@ -299,7 +346,7 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
-        rows_to_insert = [] # Lista para almacenar los datos a insertar en un solo batch
+        rows_to_insert = []
         
         for row in csv_reader:
             try:
@@ -314,9 +361,6 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                     skip_count += 1
                     continue
 
-                # Normalizar los nombres de las columnas para compatibilidad
-                # Asegúrate de que las claves del diccionario sean consistentes con tu archivo
-                # Aquí se asume que las claves son en minúsculas y con guiones bajos si provienen de la normalización de pandas
                 sistema_from_file = row.get('sistema')
                 sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file and str(sistema_from_file).strip() else None
 
@@ -324,7 +368,6 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                 especie_val = especie_from_file if especie_from_file and str(especie_from_file).strip() else None
 
                 peso_val = row.get('peso')
-                # Convertir a int si es un dígito, de lo contrario None
                 peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
                 
                 cantidad_radares_val = row.get('cantidad_radares')
@@ -333,13 +376,13 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                 monitoreados_val = row.get('monitoreados')
                 monitoreados_val = monitoreados_val if monitoreados_val and str(monitoreados_val).strip() else None
 
-                ponton_val = row.get('pontón') if row.get('pontón') else row.get('ponton') # Considera ambas claves
+                ponton_val = row.get('pontón') if row.get('pontón') else row.get('ponton')
                 ponton_val = ponton_val if ponton_val and str(ponton_val).strip() else None
 
-                ex_ponton_val = row.get('ex_pontón') if row.get('ex_pontón') else row.get('ex_ponton') # Considera ambas claves
+                ex_ponton_val = row.get('ex_pontón') if row.get('ex_pontón') else row.get('ex_ponton')
                 ex_ponton_val = ex_ponton_val if ex_ponton_val and str(ex_ponton_val).strip() else None
 
-                nro_gps_ponton_val = row.get('nro_gps_pontón') if row.get('nro_gps_pontón') else row.get('nro_gps_ponton') # Considera ambas claves
+                nro_gps_ponton_val = row.get('nro_gps_pontón') if row.get('nro_gps_pontón') else row.get('nro_gps_ponton')
                 nro_gps_ponton_val = nro_gps_ponton_val if nro_gps_ponton_val and str(nro_gps_ponton_val).strip() else None
 
                 otros_datos_val = row.get('otros_datos')
@@ -348,7 +391,7 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                 rows_to_insert.append((
                     row.get('area'), 
                     especie_val, 
-                    centro_nombre, # Usar la variable centro_nombre ya validada
+                    centro_nombre,
                     peso_val,
                     sistema_upper_from_file,
                     monitoreados_val,
@@ -360,29 +403,24 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                     cantidad_radares_val,
                     nro_gps_ponton_val,
                     otros_datos_val,
-                    # id_reporte se agregará más tarde si hay inserciones exitosas
                 ))
             except Exception as e:
                 print(f"Error al preparar la fila para la inserción: {row}. Error: {e}")
                 skip_count += 1
                 continue
         
-        # Verificar si hay filas válidas para insertar
         if not rows_to_insert:
             raise HTTPException(status_code=400, detail=f"No se encontraron filas válidas para insertar en el archivo. Se han omitido {skip_count} filas.")
 
-        # Insertar el reporte solo si hay filas válidas de centros
         sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
         cursor.execute(sql_insert_reporte, (nombre_reporte,))
-        db.commit() # Confirmar la inserción del reporte para obtener su ID
+        db.commit()
         id_reporte = cursor.lastrowid
 
-        # Insertar las filas de centros con el id_reporte obtenido
         final_insert_values = []
         for row_data in rows_to_insert:
-            # Antes de agregar a final_insert_values, verifica la existencia del centro
             centro_existente_check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
-            cursor.execute(centro_existente_check_sql, (row_data[2], id_reporte)) # row_data[2] es el nombre del centro
+            cursor.execute(centro_existente_check_sql, (row_data[2], id_reporte))
             existing_centro = cursor.fetchone()
 
             if existing_centro:
@@ -390,32 +428,29 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                 skip_count += 1
                 continue
             
-            final_insert_values.append(row_data + (id_reporte,)) # Agregar id_reporte a cada tupla
+            final_insert_values.append(row_data + (id_reporte,))
 
         if not final_insert_values:
-            # Si después de las validaciones y chequeos de duplicados no hay nada para insertar,
-            # revertir la creación del reporte
             db.rollback()
             raise HTTPException(status_code=400, detail=f"No se insertó ninguna fila de centros. El reporte '{nombre_reporte}' no fue registrado. Se han omitido {skip_count} filas.")
 
         cursor.executemany(sql, final_insert_values)
-        insert_count = cursor.rowcount # Obtener el número de filas insertadas
-        db.commit() # Confirmar las inserciones de centros
+        insert_count = cursor.rowcount
+        db.commit()
 
         return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas o inválidas."}
         
     except mysql.connector.Error as err:
         if db and db.is_connected():
-            db.rollback() # Asegurar que se revierta si hay un error en la BD
+            db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al insertar datos en la base de datos: {err}")
     except HTTPException as http_exc:
         if db and db.is_connected() and id_reporte:
-            # Si se creó el reporte pero no se insertaron centros, se revierte el reporte
             db.rollback() 
-        raise http_exc # Re-lanzar la excepción HTTP
+        raise http_exc
     except Exception as e:
         if db and db.is_connected():
-            db.rollback() # Asegurar que se revierta si hay un error inesperado
+            db.rollback()
         raise HTTPException(status_code=500, detail=f"Error inesperado al procesar el archivo: {e}")
     finally:
         if db and db.is_connected():
@@ -423,10 +458,10 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
             db.close()
 
 @app.get("/centros/")
-async def get_centros(): # Eliminado: current_user: User = Depends(get_current_user)
+async def get_centros(current_user: User = Depends(get_current_user_token)):
     """
     Endpoint para obtener todos los centros.
-    YA NO REQUIERE AUTENTICACIÓN.
+    AHORA REQUIERE AUTENTICACIÓN con token.
     """
     try:
         db = get_db_connection()
@@ -445,10 +480,10 @@ async def get_centros(): # Eliminado: current_user: User = Depends(get_current_u
             db.close()
 
 @app.get("/reportes/")
-async def get_reportes(): # Eliminado: current_user: User = Depends(get_current_user)
+async def get_reportes(current_user: User = Depends(get_current_user_token)):
     """
     Endpoint para obtener todos los IDs de reportes.
-    YA NO REQUIERE AUTENTICACIÓN.
+    AHORA REQUIERE AUTENTICACIÓN con token.
     """
     try:
         db = get_db_connection()
@@ -464,10 +499,10 @@ async def get_reportes(): # Eliminado: current_user: User = Depends(get_current_
             db.close()
 
 @app.get("/reportes/{id_reporte}")
-async def get_reporte_by_id(id_reporte: int): # Eliminado: , current_user: User = Depends(get_current_user)
+async def get_reporte_by_id(id_reporte: int, current_user: User = Depends(get_current_user_token)):
     """
     Endpoint para obtener todos los centros de un reporte específico.
-    YA NO REQUIERE AUTENTICACIÓN.
+    AHORA REQUIERE AUTENTICACIÓN con token.
     """
     try:
         db = get_db_connection()
