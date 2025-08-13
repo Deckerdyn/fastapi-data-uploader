@@ -247,11 +247,13 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
 
     db = None
     cursor = None
+    nombre_reporte = os.path.splitext(file.filename)[0]
+    id_reporte = None # Inicializar id_reporte a None
+
     try:
         db = get_db_connection()
         cursor = db.cursor()
-        nombre_reporte = os.path.splitext(file.filename)[0]
-
+        
         if file_extension == '.xlsx':
             try:
                 file_bytes = await file.read()
@@ -289,11 +291,6 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
             csv_file = io.StringIO(contents.decode('utf-8-sig', errors='ignore'))
             csv_reader = csv.DictReader(csv_file, delimiter=';') 
 
-        sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
-        cursor.execute(sql_insert_reporte, (nombre_reporte,))
-        db.commit()
-        id_reporte = cursor.lastrowid
-        
         insert_count = 0
         skip_count = 0 
         
@@ -302,11 +299,14 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
+        rows_to_insert = [] # Lista para almacenar los datos a insertar en un solo batch
+        
         for row in csv_reader:
             try:
                 centro_nombre = row.get('centro')
                 if not centro_nombre or not str(centro_nombre).strip():
                     print("Error: Se encontró una fila sin nombre de centro. Se omite.")
+                    skip_count += 1
                     continue
                 
                 if centro_nombre.strip().lower() == 'centro':
@@ -314,82 +314,108 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                     skip_count += 1
                     continue
 
-                check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
-                cursor.execute(check_sql, (centro_nombre, id_reporte))
-                existing_centro = cursor.fetchone()
-
-                if existing_centro:
-                    print(f"Advertencia: El centro '{centro_nombre}' ya existe para el reporte {id_reporte}. Se omite la inserción.")
-                    skip_count += 1
-                    continue
-                
+                # Normalizar los nombres de las columnas para compatibilidad
+                # Asegúrate de que las claves del diccionario sean consistentes con tu archivo
+                # Aquí se asume que las claves son en minúsculas y con guiones bajos si provienen de la normalización de pandas
                 sistema_from_file = row.get('sistema')
-                # Asegúrate de que sistema_upper_from_file sea None si sistema_from_file es None o una cadena vacía
                 sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file and str(sistema_from_file).strip() else None
 
                 especie_from_file = row.get('especie')
-                # Asegúrate de que especie_val sea None si especie_from_file es None o una cadena vacía
                 especie_val = especie_from_file if especie_from_file and str(especie_from_file).strip() else None
 
                 peso_val = row.get('peso')
+                # Convertir a int si es un dígito, de lo contrario None
                 peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
                 
                 cantidad_radares_val = row.get('cantidad_radares')
                 cantidad_radares_val = int(cantidad_radares_val) if cantidad_radares_val and str(cantidad_radares_val).strip().isdigit() else None
                 
-                # Modificación: monotorizados_val ahora es None si la cadena está vacía o es None
                 monitoreados_val = row.get('monitoreados')
                 monitoreados_val = monitoreados_val if monitoreados_val and str(monitoreados_val).strip() else None
 
-                # Modificación: ponton_val ahora es None si la cadena está vacía o es None
-                ponton_val = row.get('pontón') # Asegúrate de que la clave del diccionario sea 'pontón' si es así en tu CSV/Excel
+                ponton_val = row.get('pontón') if row.get('pontón') else row.get('ponton') # Considera ambas claves
                 ponton_val = ponton_val if ponton_val and str(ponton_val).strip() else None
 
-                # Modificación: ex_ponton_val ahora es None si la cadena está vacía o es None
-                ex_ponton_val = row.get('ex_pontón') # Asegúrate de que la clave del diccionario sea 'ex_pontón' si es así en tu CSV/Excel
+                ex_ponton_val = row.get('ex_pontón') if row.get('ex_pontón') else row.get('ex_ponton') # Considera ambas claves
                 ex_ponton_val = ex_ponton_val if ex_ponton_val and str(ex_ponton_val).strip() else None
 
-                # Modificación: nro_gps_ponton_val ahora es None si la cadena está vacía o es None
-                nro_gps_ponton_val = row.get('nro_gps_pontón') # Asegúrate de que la clave del diccionario sea 'nro_gps_pontón'
+                nro_gps_ponton_val = row.get('nro_gps_pontón') if row.get('nro_gps_pontón') else row.get('nro_gps_ponton') # Considera ambas claves
                 nro_gps_ponton_val = nro_gps_ponton_val if nro_gps_ponton_val and str(nro_gps_ponton_val).strip() else None
 
-                # Modificación: otros_datos_val ahora es None si la cadena está vacía o es None
                 otros_datos_val = row.get('otros_datos')
                 otros_datos_val = otros_datos_val if otros_datos_val and str(otros_datos_val).strip() else None
 
-                val = (
+                rows_to_insert.append((
                     row.get('area'), 
                     especie_val, 
-                    row.get('centro'), 
+                    centro_nombre, # Usar la variable centro_nombre ya validada
                     peso_val,
                     sistema_upper_from_file,
-                    monitoreados_val, # Usar la variable que maneja el None
-                    row.get('fecha_apertura') if row.get('fecha_apertura') and row.get('fecha_apertura').strip() else None,
-                    row.get('fecha_cierre') if row.get('fecha_cierre') and row.get('fecha_cierre').strip() else None,
-                    row.get('prox_apertura') if row.get('prox_apertura') and row.get('prox_apertura').strip() else None,
-                    ponton_val, # Usar la variable que maneja el None
-                    ex_ponton_val, # Usar la variable que maneja el None
+                    monitoreados_val,
+                    row.get('fecha_apertura') if row.get('fecha_apertura') and str(row.get('fecha_apertura')).strip() else None,
+                    row.get('fecha_cierre') if row.get('fecha_cierre') and str(row.get('fecha_cierre')).strip() else None,
+                    row.get('prox_apertura') if row.get('prox_apertura') and str(row.get('prox_apertura')).strip() else None,
+                    ponton_val,
+                    ex_ponton_val,
                     cantidad_radares_val,
-                    nro_gps_ponton_val, # Usar la variable que maneja el None
-                    otros_datos_val, # Usar la variable que maneja el None
-                    id_reporte
-                )
-                cursor.execute(sql, val)
-                insert_count += 1
+                    nro_gps_ponton_val,
+                    otros_datos_val,
+                    # id_reporte se agregará más tarde si hay inserciones exitosas
+                ))
             except Exception as e:
-                print(f"Error al procesar la fila: {row}. Error: {e}")
+                print(f"Error al preparar la fila para la inserción: {row}. Error: {e}")
+                skip_count += 1
                 continue
-                
-        db.commit()
-        return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas."}
+        
+        # Verificar si hay filas válidas para insertar
+        if not rows_to_insert:
+            raise HTTPException(status_code=400, detail=f"No se encontraron filas válidas para insertar en el archivo. Se han omitido {skip_count} filas.")
+
+        # Insertar el reporte solo si hay filas válidas de centros
+        sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
+        cursor.execute(sql_insert_reporte, (nombre_reporte,))
+        db.commit() # Confirmar la inserción del reporte para obtener su ID
+        id_reporte = cursor.lastrowid
+
+        # Insertar las filas de centros con el id_reporte obtenido
+        final_insert_values = []
+        for row_data in rows_to_insert:
+            # Antes de agregar a final_insert_values, verifica la existencia del centro
+            centro_existente_check_sql = "SELECT centro FROM centros WHERE centro = %s AND `id_reporte` = %s"
+            cursor.execute(centro_existente_check_sql, (row_data[2], id_reporte)) # row_data[2] es el nombre del centro
+            existing_centro = cursor.fetchone()
+
+            if existing_centro:
+                print(f"Advertencia: El centro '{row_data[2]}' ya existe para el reporte {id_reporte}. Se omite la inserción.")
+                skip_count += 1
+                continue
+            
+            final_insert_values.append(row_data + (id_reporte,)) # Agregar id_reporte a cada tupla
+
+        if not final_insert_values:
+            # Si después de las validaciones y chequeos de duplicados no hay nada para insertar,
+            # revertir la creación del reporte
+            db.rollback()
+            raise HTTPException(status_code=400, detail=f"No se insertó ninguna fila de centros. El reporte '{nombre_reporte}' no fue registrado. Se han omitido {skip_count} filas.")
+
+        cursor.executemany(sql, final_insert_values)
+        insert_count = cursor.rowcount # Obtener el número de filas insertadas
+        db.commit() # Confirmar las inserciones de centros
+
+        return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas duplicadas o inválidas."}
         
     except mysql.connector.Error as err:
         if db and db.is_connected():
-            db.rollback()
+            db.rollback() # Asegurar que se revierta si hay un error en la BD
         raise HTTPException(status_code=500, detail=f"Error al insertar datos en la base de datos: {err}")
+    except HTTPException as http_exc:
+        if db and db.is_connected() and id_reporte:
+            # Si se creó el reporte pero no se insertaron centros, se revierte el reporte
+            db.rollback() 
+        raise http_exc # Re-lanzar la excepción HTTP
     except Exception as e:
         if db and db.is_connected():
-            db.rollback()
+            db.rollback() # Asegurar que se revierta si hay un error inesperado
         raise HTTPException(status_code=500, detail=f"Error inesperado al procesar el archivo: {e}")
     finally:
         if db and db.is_connected():
