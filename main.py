@@ -107,18 +107,23 @@ async def get_current_user(credentials: HTTPBasicCredentials = Depends(basic_aut
 # --- Modelo de datos para el formulario (existente) ---
 class Centro(BaseModel):
     area: str
-    especie: str
+    especie: str | None = None
     centro: str
     peso: int | None = None
-    sistema: str
-    monitoreados: str
+    sistema: str | None = None
+    # Modificación: monitoreados ahora es opcional y puede ser None
+    monitoreados: str | None = None 
     fecha_apertura: str | None = None
     fecha_cierre: str | None = None
     prox_apertura: str | None = None
+    # Modificación: ponton ahora es opcional y puede ser None
     ponton: str | None = None
+    # Modificación: ex_ponton ahora es opcional y puede ser None
     ex_ponton: str | None = None
     cantidad_radares: int | None = None
+    # Modificación: nro_gps_ponton ahora es opcional y puede ser None
     nro_gps_ponton: str | None = None
+    # Modificación: otros_datos ahora es opcional y puede ser None
     otros_datos: str | None = None
 
 # Función para la conexión a la base de datos (existente)
@@ -191,11 +196,30 @@ async def create_centro(centro: Centro): # Eliminado: , current_user: User = Dep
         INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
-        sistema_upper = centro.sistema.upper()
+        # Asegúrate de que sistema_upper_val sea None si centro.sistema es None o una cadena vacía
+        sistema_upper_val = centro.sistema.upper() if centro.sistema and centro.sistema.strip() else None
+        
         val = (
-            centro.area, centro.especie, centro.centro, centro.peso, sistema_upper, centro.monitoreados,
-            centro.fecha_apertura, centro.fecha_cierre, centro.prox_apertura, centro.ponton,
-            centro.ex_ponton, centro.cantidad_radares, centro.nro_gps_ponton, centro.otros_datos
+            centro.area, 
+            # Asegúrate de que especie_val sea None si centro.especie es None o una cadena vacía
+            centro.especie if centro.especie and centro.especie.strip() else None, 
+            centro.centro, 
+            centro.peso, 
+            sistema_upper_val, 
+            # Modificación: monitoreados_val ahora es None si la cadena está vacía o es None
+            centro.monitoreados if centro.monitoreados and centro.monitoreados.strip() else None,
+            centro.fecha_apertura, 
+            centro.fecha_cierre, 
+            centro.prox_apertura, 
+            # Modificación: ponton_val ahora es None si la cadena está vacía o es None
+            centro.ponton if centro.ponton and centro.ponton.strip() else None,
+            # Modificación: ex_ponton_val ahora es None si la cadena está vacía o es None
+            centro.ex_ponton if centro.ex_ponton and centro.ex_ponton.strip() else None,
+            centro.cantidad_radares, 
+            # Modificación: nro_gps_ponton_val ahora es None si la cadena está vacía o es None
+            centro.nro_gps_ponton if centro.nro_gps_ponton and centro.nro_gps_ponton.strip() else None,
+            # Modificación: otros_datos_val ahora es None si la cadena está vacía o es None
+            centro.otros_datos if centro.otros_datos and centro.otros_datos.strip() else None
         )
         cursor.execute(sql, val)
         db.commit()
@@ -300,7 +324,12 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                     continue
                 
                 sistema_from_file = row.get('sistema')
-                sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file else None
+                # Asegúrate de que sistema_upper_from_file sea None si sistema_from_file es None o una cadena vacía
+                sistema_upper_from_file = sistema_from_file.upper() if sistema_from_file and str(sistema_from_file).strip() else None
+
+                especie_from_file = row.get('especie')
+                # Asegúrate de que especie_val sea None si especie_from_file es None o una cadena vacía
+                especie_val = especie_from_file if especie_from_file and str(especie_from_file).strip() else None
 
                 peso_val = row.get('peso')
                 peso_val = int(peso_val) if peso_val and str(peso_val).strip().isdigit() else None
@@ -308,19 +337,41 @@ async def upload_centros_csv(file: UploadFile = File(...)): # Eliminado: , curre
                 cantidad_radares_val = row.get('cantidad_radares')
                 cantidad_radares_val = int(cantidad_radares_val) if cantidad_radares_val and str(cantidad_radares_val).strip().isdigit() else None
                 
+                # Modificación: monotorizados_val ahora es None si la cadena está vacía o es None
+                monitoreados_val = row.get('monitoreados')
+                monitoreados_val = monitoreados_val if monitoreados_val and str(monitoreados_val).strip() else None
+
+                # Modificación: ponton_val ahora es None si la cadena está vacía o es None
+                ponton_val = row.get('pontón') # Asegúrate de que la clave del diccionario sea 'pontón' si es así en tu CSV/Excel
+                ponton_val = ponton_val if ponton_val and str(ponton_val).strip() else None
+
+                # Modificación: ex_ponton_val ahora es None si la cadena está vacía o es None
+                ex_ponton_val = row.get('ex_pontón') # Asegúrate de que la clave del diccionario sea 'ex_pontón' si es así en tu CSV/Excel
+                ex_ponton_val = ex_ponton_val if ex_ponton_val and str(ex_ponton_val).strip() else None
+
+                # Modificación: nro_gps_ponton_val ahora es None si la cadena está vacía o es None
+                nro_gps_ponton_val = row.get('nro_gps_pontón') # Asegúrate de que la clave del diccionario sea 'nro_gps_pontón'
+                nro_gps_ponton_val = nro_gps_ponton_val if nro_gps_ponton_val and str(nro_gps_ponton_val).strip() else None
+
+                # Modificación: otros_datos_val ahora es None si la cadena está vacía o es None
+                otros_datos_val = row.get('otros_datos')
+                otros_datos_val = otros_datos_val if otros_datos_val and str(otros_datos_val).strip() else None
+
                 val = (
-                    row.get('area'), row.get('especie'), row.get('centro'), 
+                    row.get('area'), 
+                    especie_val, 
+                    row.get('centro'), 
                     peso_val,
                     sistema_upper_from_file,
-                    row.get('monitoreados'),
+                    monitoreados_val, # Usar la variable que maneja el None
                     row.get('fecha_apertura') if row.get('fecha_apertura') and row.get('fecha_apertura').strip() else None,
                     row.get('fecha_cierre') if row.get('fecha_cierre') and row.get('fecha_cierre').strip() else None,
                     row.get('prox_apertura') if row.get('prox_apertura') and row.get('prox_apertura').strip() else None,
-                    row.get('pontón'),
-                    row.get('ex_pontón'),
+                    ponton_val, # Usar la variable que maneja el None
+                    ex_ponton_val, # Usar la variable que maneja el None
                     cantidad_radares_val,
-                    row.get('nro_gps_pontón'),
-                    row.get('otros_datos'),
+                    nro_gps_ponton_val, # Usar la variable que maneja el None
+                    otros_datos_val, # Usar la variable que maneja el None
                     id_reporte
                 )
                 cursor.execute(sql, val)
