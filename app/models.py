@@ -24,6 +24,7 @@ class Centro(BaseModel):
     area: str
     especie: str | None = None
     centro: str
+    tv: int | None = None
     peso: int | None = None
     sistema: str | None = None
     monitoreados: str | None = None
@@ -34,4 +35,5 @@ class Centro(BaseModel):
     ex_ponton: str | None = None
     cantidad_radares: int | None = None
     nro_gps_ponton: str | None = None
+    transferencias: str | None = None
     otros_datos: str | None = None
