@@ -16,8 +16,8 @@ def insert_centro(centro: Centro):
         db = get_db_connection()
         cursor = db.cursor()
         sql = """
-        INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO centros (`area`, `especie`, `centro`, `tv`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `transferencias`, `otros_datos`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         # Normalización de los datos antes de la inserción
         sistema_upper_val = centro.sistema.upper() if centro.sistema and centro.sistema.strip() else None
@@ -25,6 +25,7 @@ def insert_centro(centro: Centro):
             centro.area,
             centro.especie if centro.especie and centro.especie.strip() else None,
             centro.centro,
+            centro.tv, # Nueva columna
             centro.peso,
             sistema_upper_val,
             centro.monitoreados if centro.monitoreados and centro.monitoreados.strip() else None,
@@ -35,6 +36,7 @@ def insert_centro(centro: Centro):
             centro.ex_ponton if centro.ex_ponton and centro.ex_ponton.strip() else None,
             centro.cantidad_radares,
             centro.nro_gps_ponton if centro.nro_gps_ponton and centro.nro_gps_ponton.strip() else None,
+            centro.transferencias if centro.transferencias and centro.transferencias.strip() else None, # Nueva columna
             centro.otros_datos if centro.otros_datos and centro.otros_datos.strip() else None
         )
         cursor.execute(sql, val)
@@ -168,10 +170,19 @@ async def process_upload_file(file_bytes: bytes, file_extension: str, filename: 
                 otros_datos_val = row.get('otros_datos')
                 otros_datos_val = otros_datos_val if otros_datos_val and str(otros_datos_val).strip() else None
 
+                # Nuevas columnas
+                tv_val = row.get('tv')
+                tv_val = int(tv_val) if tv_val and str(tv_val).strip().isdigit() else None
+
+                transferencias_val = row.get('transferencias')
+                transferencias_val = transferencias_val if transferencias_val and str(transferencias_val).strip() else None
+
+
                 rows_to_insert.append((
                     row.get('area'), 
                     especie_val, 
                     centro_nombre,
+                    tv_val, # Nuevo valor
                     peso_val,
                     sistema_upper_from_file,
                     monitoreados_val,
@@ -182,6 +193,7 @@ async def process_upload_file(file_bytes: bytes, file_extension: str, filename: 
                     ex_ponton_val,
                     cantidad_radares_val,
                     nro_gps_ponton_val,
+                    transferencias_val, # Nuevo valor
                     otros_datos_val,
                 ))
             except Exception as e:
@@ -206,8 +218,8 @@ async def process_upload_file(file_bytes: bytes, file_extension: str, filename: 
         # 2. Prepara los valores de los centros con el id_reporte
         final_insert_values = [row_data + (id_reporte,) for row_data in rows_to_insert]
         sql_insert_centros = """
-        INSERT INTO centros (`area`, `especie`, `centro`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `otros_datos`, `id_reporte`)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO centros (`area`, `especie`, `centro`, `tv`, `peso`, `sistema`, `monitoreados`, `fecha_apertura`, `fecha_cierre`, `prox_apertura`, `ponton`, `ex_ponton`, `cantidad_radares`, `nro_gps_ponton`, `transferencias`, `otros_datos`, `id_reporte`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         
         # 3. Inserta los centros en un solo lote (executemany)
@@ -306,3 +318,4 @@ def get_centros_by_reporte_id(id_reporte: int):
             cursor.close()
         if db and db.is_connected():
             db.close()
+
