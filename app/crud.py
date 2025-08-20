@@ -7,6 +7,8 @@ import mysql.connector
 from fastapi import HTTPException
 from app.database import get_db_connection
 from app.models import Centro
+import openpyxl # Asegúrate de que openpyxl esté importado si lo usas con pandas.read_excel
+import datetime # <--- CAMBIO CLAVE: Importar el módulo completo de datetime
 
 def insert_centro(centro: Centro):
     """Inserta una nueva entrada de centro en la base de datos."""
@@ -318,3 +320,168 @@ def get_centros_by_reporte_id(id_reporte: int):
             cursor.close()
         if db and db.is_connected():
             db.close()
+                     
+# Función para obtener todos los registros de gerenciamiento
+def get_all_gerenciamientos():
+    db = None
+    cursor = None
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM gerenciamientos")
+        results = cursor.fetchall()
+        return results
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al obtener los gerenciamientos: {err}")
+    finally:
+        if cursor:
+            cursor.close()
+        if db and db.is_connected():
+            db.close()
+
+# Función para procesar y cargar el nuevo archivo de gerenciamiento
+async def process_gerenciamiento_file(file_bytes: bytes, file_extension: str, filename: str) -> dict:
+    db = None
+    cursor = None
+    skip_count = 0
+
+    try:
+        db = get_db_connection()
+        db.autocommit = False # Inicia la transacción
+
+        csv_reader = None
+        if file_extension == '.xlsx':
+            try:
+                file_stream = io.BytesIO(file_bytes)
+                df = pd.read_excel(file_stream)
+                df.columns = df.columns.astype(str).str.strip().str.replace('.', '', regex=False).str.replace(' ', '_', regex=False).str.lower()
+                df.dropna(how='all', inplace=True)
+                csv_buffer = io.StringIO()
+                df.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8')
+                csv_buffer.seek(0)
+                csv_reader = csv.DictReader(csv_buffer, delimiter=';')
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error al leer el archivo de Excel: {e}")
+        else: # .csv
+            csv_file = io.StringIO(file_bytes.decode('utf-8-sig', errors='ignore'))
+            csv_reader = csv.DictReader(csv_file, delimiter=';')
+
+        rows_to_insert = []
+        for row in csv_reader:
+            try:
+                # Normalización de los nombres de columna del archivo
+                normalized_row = {k.strip().lower().replace(' ', '_').replace('.', ''): v for k, v in row.items()}
+                
+                def safe_get(key, cast_type=str, default=None):
+                    val = normalized_row.get(key, '')
+                    if not val or not str(val).strip():
+                        return default
+                    try:
+                        # --- CÓDIGO CRÍTICO PARA EL PARSEO DE FECHAS ---
+                        if cast_type == datetime.datetime: # <--- CAMBIO CLAVE AQUÍ: datetime.datetime
+                            # Intenta parsear la fecha en múltiples formatos
+                            try: return datetime.datetime.strptime(val, '%Y-%m-%d %H:%M:%S') # <--- CAMBIO CLAVE AQUÍ
+                            except ValueError: pass
+                            try: return datetime.datetime.strptime(val, '%m/%d/%y %H:%M') # <--- CAMBIO CLAVE AQUÍ
+                            except ValueError: pass
+                            try: return datetime.datetime.strptime(val, '%d-%m-%Y %H:%M:%S') # <--- CAMBIO CLAVE AQUÍ
+                            except ValueError: pass
+                            try: return datetime.datetime.strptime(val, '%Y-%m-%d')
+                            except ValueError: pass
+                            try: return datetime.datetime.strptime(val, '%m/%d/%Y')
+                            except ValueError: pass
+                            # Si no se puede parsear, devuelve el valor por defecto
+                            return default
+                        # --- FIN CÓDIGO CRÍTICO ---
+                        return cast_type(val)
+                    except (ValueError, TypeError):
+                        return default
+
+                nro_qa = safe_get('n°_qa')
+                if not nro_qa:
+                    print(f"Advertencia: Se omitió una fila sin 'N° QA' válido: {row}")
+                    skip_count += 1
+                    continue
+
+                rows_to_insert.append((
+                    nro_qa,
+                    safe_get('t°atraso'),
+                    safe_get('empresa'),
+                    safe_get('producto'),
+                    safe_get('lugar_salida'),
+                    safe_get('fh_guia_desp', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('fh_salida_real', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('consolidacion'),
+                    safe_get('fh_llegada', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('fh_entrguia', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ (revisado el nombre de la columna)
+                    safe_get('fh_salida', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('t°_espera', float),
+                    safe_get('consolidacion_b'),
+                    safe_get('fh_llegada_b', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('fh_entrguia_b', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ (revisado el nombre de la columna)
+                    safe_get('fh_salida_b', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('t°_espera6', float),
+                    safe_get('estado'),
+                    safe_get('fh_llegada2', datetime.datetime), # <--- CAMBIO CLAVE AQUÍ
+                    safe_get('lugar_descarga'),
+                    safe_get('tiempo_espera', float),
+                    safe_get('tiempo_de_viaje', float),
+                    safe_get('total_viaje', float),
+                ))
+            except Exception as e:
+                print(f"Error al procesar fila: {row}. Error: {e}")
+                skip_count += 1
+                continue
+
+        if not rows_to_insert:
+            raise HTTPException(status_code=400, detail=f"No se encontraron filas válidas para insertar en el archivo de gerenciamiento. Se han omitido {skip_count} filas.")
+
+        cursor = db.cursor()
+        nombre_reporte = filename.rsplit('.', 1)[0]
+        sql_insert_reporte = "INSERT INTO `reportes` (`fecha_subida`, `nombre_reporte`) VALUES (NOW(), %s)"
+        cursor.execute(sql_insert_reporte, (nombre_reporte,))
+        id_reporte = cursor.lastrowid
+        
+        final_insert_values = [row_data + (id_reporte,) for row_data in rows_to_insert]
+        sql_insert_gerenciamientos = """
+        INSERT INTO `gerenciamientos` (`nro_qa`, `t_atraso`, `empresa`, `producto`, `lugar_salida`, `fh_guia_desp`, `fh_salida_real`, `consolidacion`, `fh_llegada`, `fh_entr_guia`, `fh_salida`, `t_espera`, `consolidacion_b`, `fh_llegada_b`, `fh_entr_guia_b`, `fh_salida_b`, `t_espera6`, `estado`, `fh_llegada2`, `lugar_descarga`, `tiempo_espera`, `tiempo_de_viaje`, `total_viaje`, `id_reporte`)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.executemany(sql_insert_gerenciamientos, final_insert_values)
+        insert_count = cursor.rowcount
+
+        db.commit()
+
+        return {"message": f"Reporte '{nombre_reporte}' (ID: {id_reporte}) creado. Se han insertado {insert_count} filas. Se han omitido {skip_count} filas inválidas."}
+
+    except HTTPException as http_exc:
+        if db: db.rollback()
+        raise http_exc
+    except mysql.connector.Error as err:
+        if db: db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al insertar datos en la base de datos: {err}")
+    except Exception as e:
+        if db: db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error inesperado al procesar el archivo: {e}")
+    finally:
+        if cursor: cursor.close()
+        if db and db.is_connected(): db.close()
+
+# Función para obtener datos de gerenciamiento por ID de reporte
+def get_gerenciamientos_by_reporte_id(id_reporte: int):
+    db = None
+    cursor = None
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+        sql = "SELECT * FROM gerenciamientos WHERE id_reporte = %s"
+        cursor.execute(sql, (id_reporte,))
+        results = cursor.fetchall()
+        if not results:
+            return {"message": f"No se encontraron registros de gerenciamiento para el reporte con ID {id_reporte}."}
+        return results
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error al obtener los gerenciamientos por reporte: {err}")
+    finally:
+        if cursor: cursor.close()
+        if db and db.is_connected(): db.close()

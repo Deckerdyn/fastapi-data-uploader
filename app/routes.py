@@ -55,3 +55,36 @@ async def get_reporte_by_id(id_reporte: int, current_user: User = Depends(get_cu
     Requiere autenticación con token.
     """
     return crud.get_centros_by_reporte_id(id_reporte)
+
+@centros_router.post("/upload-gerenciamiento/")
+async def upload_gerenciamiento_csv(file: UploadFile = File(...), current_user: User = Depends(get_current_user_token)):
+    """
+    Endpoint para recibir y procesar archivos CSV o XLSX para gerenciamiento.
+    Requiere autenticación con token.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No se ha proporcionado un archivo.")
+    
+    file_extension = os.path.splitext(file.filename)[1].lower()
+
+    if file_extension not in ['.csv', '.xlsx']:
+        raise HTTPException(status_code=400, detail="El archivo debe ser de tipo .csv o .xlsx")
+    
+    file_bytes = await file.read()
+    return await crud.process_gerenciamiento_file(file_bytes, file_extension, file.filename)
+
+@centros_router.get("/gerenciamientos/")
+async def get_all_gerenciamientos(current_user: User = Depends(get_current_user_token)):
+    """
+    Endpoint para obtener todos los registros de gerenciamiento.
+    Requiere autenticación con token.
+    """
+    return crud.get_all_gerenciamientos()
+
+@centros_router.get("/gerenciamientos/{id_reporte}")
+async def get_gerenciamientos_by_reporte_id(id_reporte: int, current_user: User = Depends(get_current_user_token)):
+    """
+    Endpoint para obtener todos los registros de gerenciamiento de un reporte específico.
+    Requiere autenticación con token.
+    """
+    return crud.get_gerenciamientos_by_reporte_id(id_reporte)
