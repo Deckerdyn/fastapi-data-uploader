@@ -320,7 +320,7 @@ def get_centros_by_reporte_id(id_reporte: int):
             cursor.close()
         if db and db.is_connected():
             db.close()
-                     
+                 
 # Función para obtener todos los registros de gerenciamiento
 def get_all_gerenciamientos():
     db = None
